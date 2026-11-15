@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "spotify-auth",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-14",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "01adffdd17874ff2a19afbf7a840443b"
+    }
+  ],
+  "vars": {
+    "ISSUER": "https://spotify-auth.charrienacor.workers.dev",
+    "MCP_SERVER_URL": "https://spotify-mcp.charrienacor.workers.dev/mcp"
+  },
+  "observability": {
+    "enabled": true
+  }
+}
