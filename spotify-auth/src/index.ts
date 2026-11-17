@@ -15,6 +15,11 @@ const authorizationServer = new OAuthAuthorizationServer<Env>({
   clientIdMetadataDocumentEnabled: true,
   // Dynamic Client Registration for older MCP clients.
   clientRegistrationEndpoint: "/oauth/register",
+  // Sliding grant lifetime: every successful refresh moves the expiry
+  // forward, so the owner's grant lives as long as its refresh token keeps
+  // being used (the lava agent refreshes on every session start). After 90
+  // days of total silence the grant still expires and a re-login is needed.
+  refreshTokenIdleTTL: 90 * 24 * 60 * 60,
 });
 
 function page(title: string, body: string, status = 200): Response {
