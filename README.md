@@ -44,7 +44,7 @@ Two Workers, per [Cloudflare's current MCP authorization pattern](https://develo
 | `spotify_now_playing` | Current or last-played track |
 | `spotify_play` | Start playback (playlist/album context or track URIs) — Premium |
 | `spotify_pause` | Pause playback — Premium |
-| `spotify_skip` | Skip to next track, verified by read-back — Premium |
+| `spotify_skip` | Skip to next track — Premium |
 | `spotify_queue` | Add a track to the queue — Premium |
 | `spotify_volume` | Get current volume, or set an exact level 0-100 — Premium to set |
 | `spotify_volume_up` | Volume up by a step (default 10) — Premium |
