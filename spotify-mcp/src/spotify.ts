@@ -148,6 +148,28 @@ function toolError(error: unknown) {
   };
 }
 
+// What we care about in GET /me/player for read-backs (skip verification).
+interface PlayerSnapshot {
+  uri: string;
+  name: string;
+  artists: string[];
+}
+
+// Read what is on air. Returns null when nothing is playing (204) or the
+// player state carries no item.
+async function readNowPlaying(): Promise<PlayerSnapshot | null> {
+  const data = await spotifyApi<{
+    item?: { uri?: string; name?: string; artists?: Array<{ name: string }> };
+  }>("/me/player");
+  const item = data.item;
+  if (!item?.uri) return null;
+  return {
+    uri: item.uri,
+    name: item.name ?? "",
+    artists: (item.artists ?? []).map((a) => a.name),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tools
 // ---------------------------------------------------------------------------
@@ -430,7 +452,8 @@ export function registerSpotifyTools(server: McpServer) {
   server.registerTool(
     "spotify_skip",
     {
-      description: "Skip to the next track. Spotify Premium required.",
+      description:
+        "Skip to the next track and verify playback actually changed. Spotify Premium required.",
       inputSchema: {
         device_id: z.string().optional().describe("Device to skip on (defaults to active device)"),
       },
@@ -438,9 +461,51 @@ export function registerSpotifyTools(server: McpServer) {
     async ({ device_id }) => {
       try {
         const params = device_id ? `?device_id=${encodeURIComponent(device_id)}` : "";
+
+        // Snapshot what is on air first: Spotify SILENTLY IGNORES
+        // /me/player/next when the queue is empty (always the case right
+        // after playing a single track) yet still answers 204 — so without
+        // a read-back the tool would claim success while nothing happened.
+        const before = await readNowPlaying();
+        if (!before) {
+          return text("Nothing is playing right now — play a song first.");
+        }
+
         await spotifyApi(`/me/player/next${params}`, { method: "POST" });
-        return text("Skipped to next track.");
+
+        // Spotify registers a skip within ~0.3-0.9s. Probe at 0.2 / 0.5 /
+        // 0.8s (cumulative): a real skip shows up on probe 1 or 2, an empty
+        // queue falls through after ~0.8s. The read-back is the truth, not
+        // the 204.
+        const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+        let waited = 0;
+        for (const probeAt of [200, 500, 800]) {
+          await wait(probeAt - waited);
+          waited = probeAt;
+          const now = await readNowPlaying();
+          if (now && now.uri !== before.uri) {
+            const who = now.artists.length ? ` — ${now.artists.join(", ")}` : "";
+            return text(`Skipped to: ${now.name}${who}`);
+          }
+        }
+
+        return text(
+          "Spotify accepted the skip but playback did not change — the queue is most likely empty (this happens right after playing a single track). Play or queue a song to continue."
+        );
       } catch (error) {
+        // Translate the two common skip failures into plain language.
+        const raw = error instanceof Error ? error.message : String(error);
+        const status = Number(raw.match(/Spotify API error \((\d+)\)/)?.[1]);
+        if (status === 404) {
+          return text(
+            "No active Spotify device. Open Spotify on a device and press play once, then try again."
+          );
+        }
+        if (status === 403) {
+          return text(
+            "Spotify refused the skip on this track (playback restriction). Try again, or play a specific song."
+          );
+        }
         return toolError(error);
       }
     }
