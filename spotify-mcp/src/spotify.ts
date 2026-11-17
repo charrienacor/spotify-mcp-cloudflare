@@ -106,7 +106,29 @@ async function spotifyApi<T>(
   });
 
   const responseText = await res.text();
-  const data = responseText ? JSON.parse(responseText) : {};
+  let data: unknown = {};
+  if (responseText) {
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+      // Playback-control endpoints (play/pause/skip/queue) answer success with
+      // an EMPTY 204 — and Spotify's edge occasionally attaches a malformed
+      // body to one (measured: POST /me/player/next arrived 2xx with garbage
+      // that made JSON.parse throw "Unexpected token 'x', "xR-g8LRUeC"...").
+      // The status is the truth: a 2xx means the command executed, so treat
+      // any unreadable body on a 2xx as success. A non-2xx with an unreadable
+      // body fails with the status and a body prefix — never a bare
+      // SyntaxError the caller cannot interpret.
+      if (res.ok) {
+        console.log(`spotifyApi: ${res.status} ${path} with non-JSON body: ${responseText.slice(0, 80)}`);
+        data = {};
+      } else {
+        throw new Error(
+          `Spotify API error (${res.status}): unreadable response body: ${responseText.slice(0, 120)}`
+        );
+      }
+    }
+  }
 
   if (!res.ok) {
     const message =
@@ -439,6 +461,124 @@ export function registerSpotifyTools(server: McpServer) {
         if (device_id) params.set("device_id", device_id);
         await spotifyApi(`/me/player/queue?${params.toString()}`, { method: "POST" });
         return text("Track added to queue.");
+      } catch (error) {
+        return toolError(error);
+      }
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // Volume (Premium; works on the active Spotify Connect device)
+  // -------------------------------------------------------------------------
+
+  async function getCurrentVolumePercent(): Promise<number | null> {
+    const data = await spotifyApi<{ device?: { volume_percent?: number } }>("/me/player");
+    const volume = data.device?.volume_percent;
+    return typeof volume === "number" ? volume : null;
+  }
+
+  async function setVolumePercent(percent: number, deviceId?: string): Promise<void> {
+    const params = new URLSearchParams({ volume_percent: String(Math.round(percent)) });
+    if (deviceId) params.set("device_id", deviceId);
+    await spotifyApi(`/me/player/volume?${params.toString()}`, { method: "PUT" });
+  }
+
+  server.registerTool(
+    "spotify_volume",
+    {
+      description:
+        "Get the current playback volume (0-100), or set it to an exact level. Spotify Premium required to set.",
+      inputSchema: {
+        level: z
+          .number()
+          .int()
+          .min(0)
+          .max(100)
+          .optional()
+          .describe("Volume 0-100. Omit to just read the current volume."),
+        device_id: z.string().optional().describe("Device to control (defaults to active device)"),
+      },
+    },
+    async ({ level, device_id }) => {
+      try {
+        if (level === undefined) {
+          const current = await getCurrentVolumePercent();
+          return text(
+            current === null
+              ? "No active playback, so the current volume is unknown."
+              : `Current volume: ${current}%.`
+          );
+        }
+        await setVolumePercent(level, device_id);
+        return text(`Volume set to ${level}%.`);
+      } catch (error) {
+        return toolError(error);
+      }
+    }
+  );
+
+  server.registerTool(
+    "spotify_volume_up",
+    {
+      description:
+        "Turn the volume up by a step (default 10). Reads the current level first and clamps at 100. Spotify Premium required.",
+      inputSchema: {
+        step: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .default(10)
+          .describe("How much to increase the volume (percentage points)"),
+        device_id: z.string().optional().describe("Device to control (defaults to active device)"),
+      },
+    },
+    async ({ step, device_id }) => {
+      try {
+        const current = await getCurrentVolumePercent();
+        if (current === null) {
+          return text(
+            "No active playback, so the current volume is unknown. Use spotify_volume with an explicit level instead."
+          );
+        }
+        const next = Math.min(100, current + step);
+        if (next === current) return text(`Volume already at maximum (${current}%).`);
+        await setVolumePercent(next, device_id);
+        return text(`Volume up: ${current}% → ${next}%.`);
+      } catch (error) {
+        return toolError(error);
+      }
+    }
+  );
+
+  server.registerTool(
+    "spotify_volume_down",
+    {
+      description:
+        "Turn the volume down by a step (default 10). Reads the current level first and clamps at 0. Spotify Premium required.",
+      inputSchema: {
+        step: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .default(10)
+          .describe("How much to decrease the volume (percentage points)"),
+        device_id: z.string().optional().describe("Device to control (defaults to active device)"),
+      },
+    },
+    async ({ step, device_id }) => {
+      try {
+        const current = await getCurrentVolumePercent();
+        if (current === null) {
+          return text(
+            "No active playback, so the current volume is unknown. Use spotify_volume with an explicit level instead."
+          );
+        }
+        const next = Math.max(0, current - step);
+        if (next === current) return text(`Volume already at minimum (${current}%).`);
+        await setVolumePercent(next, device_id);
+        return text(`Volume down: ${current}% → ${next}%.`);
       } catch (error) {
         return toolError(error);
       }

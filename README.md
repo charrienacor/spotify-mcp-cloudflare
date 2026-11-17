@@ -12,7 +12,7 @@ Two Workers, per [Cloudflare's current MCP authorization pattern](https://develo
                        ┌────────────────────────────────┐
    MCP client          │        spotify-mcp             │
  (Claude, Cursor,  ───▶│  /mcp (OAuth resource server)  │───▶ Spotify Web API
-  custom agents)       │  12 Spotify tools              │    api.spotify.com
+  custom agents)       │  15 Spotify tools              │    api.spotify.com
                        └───────────┬────────────────────┘
                                    │ service binding: validateToken()
                        ┌───────────▼────────────────────┐
@@ -46,6 +46,9 @@ Two Workers, per [Cloudflare's current MCP authorization pattern](https://develo
 | `spotify_pause` | Pause playback — Premium |
 | `spotify_skip` | Skip to next track — Premium |
 | `spotify_queue` | Add a track to the queue — Premium |
+| `spotify_volume` | Get current volume, or set an exact level 0-100 — Premium to set |
+| `spotify_volume_up` | Volume up by a step (default 10) — Premium |
+| `spotify_volume_down` | Volume down by a step (default 10) — Premium |
 
 *Playback tools require Spotify Premium and an active device; playlist tools work on free accounts.*
 
