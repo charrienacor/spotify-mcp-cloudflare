@@ -358,7 +358,8 @@ export function registerSpotifyTools(server: McpServer) {
     },
     async ({ playlist_id, track_uris }) => {
       try {
-        await spotifyApi(`/playlists/${playlist_id}/tracks`, {
+        // Spotify's Feb 2026 API change renamed /tracks to /items.
+        await spotifyApi(`/playlists/${playlist_id}/items`, {
           method: "POST",
           json: { uris: track_uris },
         });
