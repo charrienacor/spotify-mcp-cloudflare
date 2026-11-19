@@ -152,6 +152,55 @@ function toolError(error: unknown) {
 // Tools
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Random track helper (used for autoplay)
+// ---------------------------------------------------------------------------
+
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/**
+ * Pick random tracks by running several searches with a random letter, a
+ * random release-year range and a random offset. Spotify's /recommendations
+ * endpoint is deprecated for newer apps, so random search is the workaround.
+ */
+async function getRandomTracks(count: number, excludeUri?: string): Promise<string[]> {
+  const letters = "abcdefghijklmnoprstuwy";
+  const searches = Array.from({ length: 4 }, () => {
+    const letter = letters[Math.floor(Math.random() * letters.length)];
+    const startYear = 1990 + Math.floor(Math.random() * 33); // 1990-2022
+    const endYear = Math.min(2026, startYear + 3);
+    const offset = Math.floor(Math.random() * 300);
+    const q = `${letter} year:${startYear}-${endYear}`;
+    return spotifyApi<{
+      tracks?: { items: Array<{ uri: string; popularity?: number }> };
+    }>(`/search?q=${encodeURIComponent(q)}&type=track&limit=10&offset=${offset}`);
+  });
+
+  const results = await Promise.allSettled(searches);
+  const seen = new Set<string>();
+  const pool: Array<{ uri: string; popularity?: number }> = [];
+  for (const r of results) {
+    if (r.status !== "fulfilled") continue;
+    for (const t of r.value.tracks?.items ?? []) {
+      if (t.uri === excludeUri || seen.has(t.uri)) continue;
+      seen.add(t.uri);
+      pool.push(t);
+    }
+  }
+
+  // Prefer tracks people actually know, if popularity is returned.
+  const popular = pool.filter((t) => (t.popularity ?? 100) >= 30);
+  const source = popular.length >= count ? popular : pool;
+  return shuffle(source).slice(0, count).map((t) => t.uri);
+}
+
 export function registerSpotifyTools(server: McpServer) {
   server.registerTool(
     "spotify_status",
@@ -381,7 +430,7 @@ export function registerSpotifyTools(server: McpServer) {
     "spotify_play",
     {
       description:
-        "Start playback. Optionally target a device and a playlist/album URI or track URIs. Spotify Premium required.",
+        "Start playback. Optionally target a device and a playlist/album URI or track URIs. When given a single track, random tracks are automatically added after it so skipping works right away. Spotify Premium required.",
       inputSchema: {
         device_id: z.string().optional().describe("Device to play on (from spotify_get_devices)"),
         context_uri: z
@@ -389,19 +438,53 @@ export function registerSpotifyTools(server: McpServer) {
           .optional()
           .describe("URI of a playlist or album to play, e.g. spotify:playlist:..."),
         track_uris: z.array(z.string()).optional().describe("Track URIs to play instead of a context"),
+        offset_uri: z
+          .string()
+          .optional()
+          .describe("Track URI within context_uri to start from"),
+        autoplay: z
+          .boolean()
+          .default(true)
+          .describe("When playing a single track, automatically add more tracks after it"),
       },
     },
-    async ({ device_id, context_uri, track_uris }) => {
+    async ({ device_id, context_uri, track_uris, offset_uri, autoplay }) => {
       try {
         const params = device_id ? `?device_id=${encodeURIComponent(device_id)}` : "";
         const json: Record<string, unknown> = {};
-        if (context_uri) json.context_uri = context_uri;
-        if (track_uris) json.uris = track_uris;
+        let uris = track_uris;
+        let added = 0;
+
+        // Single track, no context: pad the list with random tracks so there
+        // is always a "next" song to skip to.
+        if (autoplay && !context_uri && uris && uris.length === 1) {
+          try {
+            const firstUri = uris[0];
+            const extras = await getRandomTracks(20, firstUri);
+            uris = [firstUri, ...extras];
+            added = extras.length;
+          } catch (e) {
+            // Autoplay is a bonus; never block playback because of it.
+            console.log("spotify_play: autoplay padding failed", e);
+          }
+        }
+
+        if (context_uri) {
+          json.context_uri = context_uri;
+          if (offset_uri) json.offset = { uri: offset_uri };
+        }
+        if (uris) json.uris = uris;
+
         await spotifyApi(`/me/player/play${params}`, {
           method: "PUT",
           json: Object.keys(json).length ? json : undefined,
         });
-        return text("Playback started.");
+
+        return text(
+          added > 0
+            ? `Playback started, with ${added} more track(s) lined up after it.`
+            : "Playback started."
+        );
       } catch (error) {
         return toolError(error);
       }
@@ -430,13 +513,28 @@ export function registerSpotifyTools(server: McpServer) {
   server.registerTool(
     "spotify_skip",
     {
-      description: "Skip to the next track. Spotify Premium required.",
+      description:
+        "Skip to the next track. Checks that something is queued first, and says so if not. Spotify Premium required.",
       inputSchema: {
         device_id: z.string().optional().describe("Device to skip on (defaults to active device)"),
       },
     },
     async ({ device_id }) => {
       try {
+        // Make sure there is actually a next track, so we never report a
+        // skip that Spotify silently ignored.
+        try {
+          const queue = await spotifyApi<{ queue?: unknown[] }>("/me/player/queue");
+          if (!queue.queue || queue.queue.length === 0) {
+            return text(
+              "Nothing is queued after the current track, so there is nothing to skip to. Add tracks with spotify_queue or play a playlist/album."
+            );
+          }
+        } catch (e) {
+          // If the queue check itself fails, fall through and try the skip.
+          console.log("spotify_skip: queue check failed", e);
+        }
+
         const params = device_id ? `?device_id=${encodeURIComponent(device_id)}` : "";
         await spotifyApi(`/me/player/next${params}`, { method: "POST" });
         return text("Skipped to next track.");
